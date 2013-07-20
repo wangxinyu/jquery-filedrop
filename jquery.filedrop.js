@@ -1,3 +1,4 @@
+
 /*global jQuery:false, alert:false */
 
 /*
@@ -70,8 +71,9 @@
     var opts = $.extend({}, default_opts, options),
         global_progress = [];
 
-    this.on('drop', drop).on('dragstart', opts.dragStart).on('dragenter', dragEnter).on('dragover', dragOver).on('dragleave', dragLeave);
-    $(document).on('drop', docDrop).on('dragenter', docEnter).on('dragover', docOver).on('dragleave', docLeave);
+    this.bind('drop', drop).bind('dragstart', opts.dragStart).bind('dragenter', dragEnter).bind('dragover', dragOver).bind('dragleave', dragLeave);
+    $(document).unbind('drop').unbind('dragenter').unbind('dragover').unbind('dragleave');
+    $(document).bind('drop', docDrop).bind('dragenter', docEnter).bind('dragover', docOver).bind('dragleave', docLeave);
 
     $('#' + opts.fallback_id).change(function(e) {
       opts.drop(e);
@@ -82,24 +84,74 @@
 
     function drop(e) {
       if( opts.drop.call(this, e) === false ) return false;
-      files = e.dataTransfer.files;
-      if (files === null || files === undefined || files.length === 0) {
-        opts.error(errors[0]);
-        return false;
+
+      function walkFileSystem(directory, callback, error) {
+        if (!callback.pending) {
+          callback.pending = 0;
+        }
+        if (!callback.files) {
+          callback.files = [];
+        }
+
+        callback.pending++;
+
+        var reader = directory.createReader(),
+        relativePath = directory.fullPath.replace(/^\//, '').replace(/(.+?)\/?$/, '$1/');
+        reader.readEntries(function(entries) {
+          callback.pending--;
+          $.each(entries, function(index, entry) {
+            if (entry.isFile) {
+              callback.pending++;
+              entry.file(function(File) {
+                File.path = encodeURIComponent(relativePath);
+                callback.files.push(File);
+                if (--callback.pending === 0) {
+                    callback(callback.files);
+                }
+              }, error);
+            } else {
+              walkFileSystem(entry, callback, error);
+            }
+          });
+
+          if (callback.pending === 0) {
+            callback(callback.files);
+          }
+        }, error);
       }
-      files_count = files.length;
-      upload();
+
+      var items = e.dataTransfer.items || [], firstEntry;
+        if (items[0] && items[0].webkitGetAsEntry && (firstEntry = items[0].webkitGetAsEntry())) {
+          // Experimental way of uploading entire folders (only supported by chrome >= 21)
+          walkFileSystem(firstEntry.filesystem.root, function(allfiles) {
+            files = allfiles;
+            files_count = files.length;
+            upload();
+
+          }, function() {
+            // Fallback to old way when error happens
+            files = e.dataTransfer.files;
+            files_count = files.length;
+            upload();
+          });
+        } else {
+          files = e.dataTransfer.files;
+          files_count = files.length;
+          upload();
+      }
+
       e.preventDefault();
       return false;
     }
 
-    function getBuilder(filename, filedata, mime, boundary) {
+    function getBuilder(filename, filedata, mime, boundary, path) {
       var dashdash = '--',
           crlf = '\r\n',
           builder = '';
 
       if (opts.data) {
-        var params = $.param(opts.data).replace(/\+/g, '%20').split(/&/);
+        data = $.extend(opts.data, {path: path});
+        var params = $.param(data).replace(/\+/g, '%20').split(/&/);
 
         $.each(params, function() {
           var pair = this.split("=", 2),
@@ -282,7 +334,7 @@
             reader.onloadend = !opts.beforeSend ? send : function (e) {
               opts.beforeSend(files[fileIndex], fileIndex, function () { send(e); });
             };
-            
+
             reader.readAsBinaryString(files[fileIndex]);
 
           } else {
@@ -324,16 +376,18 @@
             global_progress_index = global_progress.length,
             builder,
             newName = rename(file.name),
-            mime = file.type;
+            mime = file.type,
+            path = file.path ? file.path : '';
+
 
         if (opts.withCredentials) {
           xhr.withCredentials = opts.withCredentials;
         }
 
         if (typeof newName === "string") {
-          builder = getBuilder(newName, e.target.result, mime, boundary);
+          builder = getBuilder(newName, e.target.result, mime, boundary, path);
         } else {
-          builder = getBuilder(file.name, e.target.result, mime, boundary);
+          builder = getBuilder(file.name, e.target.result, mime, boundary, path);
         }
 
         upload.index = index;
@@ -345,13 +399,13 @@
         upload.startData = 0;
         upload.addEventListener("progress", progress, false);
 
-		// Allow url to be a method
-		if (jQuery.isFunction(opts.url)) {
-	        xhr.open("POST", opts.url(), true);
-	    } else {
-	    	xhr.open("POST", opts.url, true);
-	    }
-	    
+        // Allow url to be a method
+        if (jQuery.isFunction(opts.url)) {
+            xhr.open("POST", opts.url(), true);
+        } else {
+            xhr.open("POST", opts.url, true);
+        }
+
         xhr.setRequestHeader('content-type', 'multipart/form-data; boundary=' + boundary);
 
         // Add headers
@@ -403,7 +457,7 @@
             if (result === false) {
               stop_loop = true;
             }
-          
+
 
           // Pass any errors to the error option
           if (xhr.status < 200 || xhr.status > 299) {
